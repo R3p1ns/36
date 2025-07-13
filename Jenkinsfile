@@ -23,8 +23,8 @@ pipeline {
         stage('Unit Tests') {
             steps {
                 sh '''
-                python -m pip install pytest pytest-cov
-                python -m pytest test_app.py --cov=app --cov-report=xml || true
+                python3 -m pip install pytest pytest-cov
+                python3 -m pytest test_app.py --cov=app --cov-report=xml || true
                 '''
             }
             post {
