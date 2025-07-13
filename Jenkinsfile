@@ -21,19 +21,15 @@ pipeline {
 
         /* Stage 2: Run Unit Tests */
         stage('Unit Tests') {
-            steps {
-                sh '''
-                python3 -m pip install pytest pytest-cov
-                python3 -m pytest test_app.py --cov=app --cov-report=xml || true
-                '''
-            }
-            post {
-                always {
-                    junit 'test-reports/*.xml'
-                    cobertura coberturaReportFile: 'coverage.xml'
-                }
-            }
-        }
+    steps {
+        sh '''
+        python3 -m venv venv
+        . venv/bin/activate
+        pip install pytest pytest-cov
+        python -m pytest test_app.py --cov=app --cov-report=xml || true
+        '''
+    }
+}
 
         /* Stage 3: Push to Docker Hub */
         stage('Push to Docker Hub') {
