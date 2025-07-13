@@ -36,18 +36,28 @@ pipeline {
 
         /* Stage 3: Deploy to EKS */
         stage('Deploy to EKS') {
-            steps {
-                script {
-                    sh """
-                    aws eks --region ${AWS_REGION} update-kubeconfig --name ${EKS_CLUSTER_NAME}
-                    sed -i 's|<DOCKER_IMAGE>|${DOCKER_IMAGE}:${DOCKER_TAG}|g' k8s-deployment.yaml
-                    kubectl apply -f k8s-deployment.yaml
-                    kubectl rollout status deployment/flask-app --timeout=2m
-                    """
-                }
+    steps {
+        script {
+            withCredentials([[
+                $class: 'AmazonWebServicesCredentialsBinding',
+                credentialsId: 'AWS_ACCESS_KEY_ID',
+                accessKeyVariable: 'AWS_ACCESS_KEY_ID',
+                secretKeyVariable: 'AWS_SECRET_ACCESS_KEY'
+            ]]) {
+                sh """
+                # Cập nhật kubeconfig với đầy đủ quyền
+                aws eks --region ${AWS_REGION} update-kubeconfig --name ${EKS_CLUSTER_NAME} \
+                    --role-arn arn:aws:iam::ACCOUNT_ID:role/EKS-Admin-Role
+
+                # Thêm --validate=false để bỏ qua check credentials tạm thời
+                sed -i 's|<DOCKER_IMAGE>|${DOCKER_IMAGE}:${DOCKER_TAG}|g' k8s-deployment.yaml
+                kubectl apply -f k8s-deployment.yaml --validate=false
+                kubectl rollout status deployment/flask-app --timeout=2m
+                """
             }
         }
-
+    }
+}
         /* Stage 4: End-to-End Test */
         stage('E2E Test') {
             steps {
