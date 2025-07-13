@@ -1,42 +1,49 @@
 pipeline {
-    agent any
+    agent {
+        docker {
+            image 'docker:24.0.7-dind'
+            args '--privileged -v /var/run/docker.sock:/var/run/docker.sock'
+        }
+    }
     environment {
         // AWS Credentials
         AWS_ACCESS_KEY_ID     = credentials('AWS_ACCESS_KEY_ID')
         AWS_SECRET_ACCESS_KEY = credentials('AWS_SECRET_ACCESS_KEY')
-        EKS_CLUSTER_NAME     = 'lan-cuoi'  // Thay bằng tên EKS cluster của bạn
-        AWS_REGION           = 'us-east-1'  // Thay bằng region của bạn
-        DOCKER_IMAGE         = 'hieupro7410/flask-app' // Bỏ tag BUILD_ID tạm thời
+        EKS_CLUSTER_NAME     = 'lan-cuoi'
+        AWS_REGION           = 'us-east-1'
+        DOCKER_IMAGE         = 'hieupro7410/flask-app'
     }
     stages {
-        /* Stage 1: Build Docker Image */
+        /* Stage 1: Setup Python Test Environment */
+        stage('Prepare Test Environment') {
+            agent {
+                docker {
+                    image 'python:3.9-slim'
+                    reuseNode true
+                }
+            }
+            steps {
+                sh '''
+                pip install pytest pytest-cov
+                python -m pytest test_app.py --cov=app --cov-report=xml || true
+                '''
+            }
+        }
+
+        /* Stage 2: Build Docker Image */
         stage('Build Docker Image') {
             steps {
                 script {
-                    // Sử dụng tag đơn giản
                     docker.build("${DOCKER_IMAGE}")
                 }
             }
         }
-
-        /* Stage 2: Run Unit Tests */
-        stage('Unit Tests') {
-    steps {
-        sh '''
-        python3 -m venv venv
-        . venv/bin/activate
-        pip install pytest pytest-cov
-        python -m pytest test_app.py --cov=app --cov-report=xml || true
-        '''
-    }
-}
 
         /* Stage 3: Push to Docker Hub */
         stage('Push to Docker Hub') {
             steps {
                 script {
                     docker.withRegistry('https://registry.hub.docker.com', 'docker-hub-cred') {
-                        // Thêm tag hợp lệ
                         docker.image("${DOCKER_IMAGE}").push('latest')
                     }
                 }
@@ -48,6 +55,7 @@ pipeline {
             steps {
                 script {
                     sh """
+                    apk add --no-cache aws-cli kubectl
                     aws eks --region ${AWS_REGION} update-kubeconfig --name ${EKS_CLUSTER_NAME}
                     sed -i 's|<DOCKER_IMAGE>|${DOCKER_IMAGE}:latest|g' k8s-deployment.yaml
                     kubectl apply -f k8s-deployment.yaml
@@ -59,9 +67,8 @@ pipeline {
     }
     post {
         always {
-            // Thay thế Slack notification bằng email hoặc ghi log
             echo "Pipeline completed - Status: ${currentBuild.result}"
-            archiveArtifacts artifacts: '**/target/*.jar, **/test-reports/*.xml', allowEmptyArchive: true
+            archiveArtifacts artifacts: '**/test-reports/*.xml', allowEmptyArchive: true
         }
     }
 }
