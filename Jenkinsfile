@@ -2,7 +2,7 @@ pipeline {
     agent {
         docker {
             image 'docker:24.0.7-dind'
-            args '--privileged -v /var/run/docker.sock:/var/run/docker.sock'
+            args '--privileged --group-add $(stat -c %g /var/run/docker.sock) -v /var/run/docker.sock:/var/run/docker.sock'
         }
     }
     environment {
@@ -13,41 +13,38 @@ pipeline {
         DOCKER_IMAGE         = 'hieupro7410/flask-app'
     }
     stages {
-        /* Stage 0: Setup Docker Environment */
-        stage('Prepare Docker') {
+        /* Stage 1: Verify Docker Access */
+        stage('Check Docker') {
             steps {
-                script {
-                    sh '''
-                    sudo chmod 777 /var/run/docker.sock
-                    docker system info
-                    '''
-                }
+                sh 'docker system info'
             }
         }
 
-
-        /* Stage 2: Build Docker Image */
-        stage('Build Docker Image') {
-            steps {
-                script {
-                    sh 'docker build -t ${DOCKER_IMAGE} .'
+        /* Stage 2: Unit Tests */
+        stage('Unit Tests') {
+            agent {
+                docker {
+                    image 'python:3.9-slim'
+                    reuseNode true
                 }
+            }
+            steps {
+                sh '''
+                python -m venv /tmp/venv
+                source /tmp/venv/bin/activate
+                pip install pytest pytest-cov
+                python -m pytest test_app.py --cov=app --cov-report=xml || true
+                '''
             }
         }
 
-        /* Stage 3: Push to Docker Hub */
-        stage('Push to Docker Hub') {
+        /* Stage 3: Build & Push */
+        stage('Build and Push') {
             steps {
                 script {
-                    withCredentials([usernamePassword(
-                        credentialsId: 'docker-hub-cred',
-                        usernameVariable: 'DOCKER_USER',
-                        passwordVariable: 'DOCKER_PASS'
-                    )]) {
-                        sh '''
-                        echo $DOCKER_PASS | docker login -u $DOCKER_USER --password-stdin
-                        docker push ${DOCKER_IMAGE}:latest
-                        '''
+                    docker.build("${DOCKER_IMAGE}")
+                    docker.withRegistry('https://registry.hub.docker.com', 'docker-hub-cred') {
+                        docker.image("${DOCKER_IMAGE}").push('latest')
                     }
                 }
             }
@@ -59,12 +56,9 @@ pipeline {
                 script {
                     sh '''
                     apk add --no-cache aws-cli kubectl
-                    aws configure set aws_access_key_id ${AWS_ACCESS_KEY_ID}
-                    aws configure set aws_secret_access_key ${AWS_SECRET_ACCESS_KEY}
                     aws eks --region ${AWS_REGION} update-kubeconfig --name ${EKS_CLUSTER_NAME}
                     sed -i "s|<DOCKER_IMAGE>|${DOCKER_IMAGE}:latest|g" k8s-deployment.yaml
-                    kubectl apply -f k8s-deployment.yaml
-                    kubectl rollout status deployment/flask-app --timeout=2m
+                    kubectl apply -f k8s-deployment.yaml --timeout=2m
                     '''
                 }
             }
