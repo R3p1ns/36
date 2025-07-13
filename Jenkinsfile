@@ -1,20 +1,16 @@
 pipeline {
     agent any
     environment {
-        // AWS Credentials
-        AWS_ACCESS_KEY_ID     = credentials('AWS_ACCESS_KEY_ID')
-        AWS_SECRET_ACCESS_KEY = credentials('AWS_SECRET_ACCESS_KEY')
         EKS_CLUSTER_NAME     = 'lan-cuoi'
         AWS_REGION           = 'us-east-1'
         DOCKER_IMAGE         = "hieupro7410/flask-app"
-        DOCKER_TAG          = "build-${env.BUILD_NUMBER}" // Thay thế ${env.BUILD_ID} bằng BUILD_NUMBER
+        DOCKER_TAG          = "build-${env.BUILD_NUMBER}"
     }
     stages {
         /* Stage 1: Build Docker Image */
         stage('Build Docker Image') {
             steps {
                 script {
-                    // Build với cả repository và tag rõ ràng
                     docker.build("${DOCKER_IMAGE}:${DOCKER_TAG}")
                 }
             }
@@ -25,9 +21,7 @@ pipeline {
             steps {
                 script {
                     docker.withRegistry('https://registry.hub.docker.com', 'docker-hub-cred') {
-                        // Push cả image và tag
                         docker.image("${DOCKER_IMAGE}:${DOCKER_TAG}").push()
-                        // Optionally push as latest
                         docker.image("${DOCKER_IMAGE}:${DOCKER_TAG}").push('latest')
                     }
                 }
@@ -36,28 +30,31 @@ pipeline {
 
         /* Stage 3: Deploy to EKS */
         stage('Deploy to EKS') {
-    steps {
-        script {
-            withCredentials([[
-                $class: 'AmazonWebServicesCredentialsBinding',
-                credentialsId: 'AWS_ACCESS_KEY_ID',
-                accessKeyVariable: 'AWS_ACCESS_KEY_ID',
-                secretKeyVariable: 'AWS_SECRET_ACCESS_KEY'
-            ]]) {
-                sh """
-                # Cập nhật kubeconfig với đầy đủ quyền
-                aws eks --region ${AWS_REGION} update-kubeconfig --name ${EKS_CLUSTER_NAME} \
-                    --role-arn arn:aws:iam::ACCOUNT_ID:role/EKS-Admin-Role
+            steps {
+                script {
+                    withCredentials([
+                        string(credentialsId: 'AWS_ACCESS_KEY_ID', variable: 'AWS_ACCESS_KEY_ID'),
+                        string(credentialsId: 'AWS_SECRET_ACCESS_KEY', variable: 'AWS_SECRET_ACCESS_KEY')
+                    ]) {
+                        sh """
+                        # Configure AWS CLI
+                        aws configure set aws_access_key_id ${AWS_ACCESS_KEY_ID}
+                        aws configure set aws_secret_access_key ${AWS_SECRET_ACCESS_KEY}
+                        aws configure set region ${AWS_REGION}
 
-                # Thêm --validate=false để bỏ qua check credentials tạm thời
-                sed -i 's|<DOCKER_IMAGE>|${DOCKER_IMAGE}:${DOCKER_TAG}|g' k8s-deployment.yaml
-                kubectl apply -f k8s-deployment.yaml --validate=false
-                kubectl rollout status deployment/flask-app --timeout=2m
-                """
+                        # Update kubeconfig
+                        aws eks --region ${AWS_REGION} update-kubeconfig --name ${EKS_CLUSTER_NAME}
+
+                        # Deploy to EKS
+                        sed -i 's|<DOCKER_IMAGE>|${DOCKER_IMAGE}:${DOCKER_TAG}|g' k8s-deployment.yaml
+                        kubectl apply -f k8s-deployment.yaml --validate=false
+                        kubectl rollout status deployment/flask-app --timeout=2m
+                        """
+                    }
+                }
             }
         }
-    }
-}
+
         /* Stage 4: End-to-End Test */
         stage('E2E Test') {
             steps {
@@ -72,6 +69,11 @@ pipeline {
                     """
                 }
             }
+        }
+    }
+    post {
+        always {
+            echo "Pipeline completed - Status: ${currentBuild.currentResult}"
         }
     }
 }
