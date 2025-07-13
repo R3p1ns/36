@@ -4,45 +4,43 @@ pipeline {
         // AWS Credentials
         AWS_ACCESS_KEY_ID     = credentials('AWS_ACCESS_KEY_ID')
         AWS_SECRET_ACCESS_KEY = credentials('AWS_SECRET_ACCESS_KEY')
-        EKS_CLUSTER_NAME     = 'lan-cuoi'  // Thay bằng tên EKS cluster của bạn
-        AWS_REGION           = 'us-east-1'  // Thay bằng region của bạn
-        DOCKER_IMAGE         = 'hieupro7410/flask-app:${env.BUILD_ID}'
+        EKS_CLUSTER_NAME     = 'lan-cuoi'
+        AWS_REGION           = 'us-east-1'
+        DOCKER_IMAGE         = "hieupro7410/flask-app"
+        DOCKER_TAG          = "build-${env.BUILD_NUMBER}" // Thay thế ${env.BUILD_ID} bằng BUILD_NUMBER
     }
     stages {
         /* Stage 1: Build Docker Image */
         stage('Build Docker Image') {
             steps {
                 script {
-                    docker.build("${DOCKER_IMAGE}")
+                    // Build với cả repository và tag rõ ràng
+                    docker.build("${DOCKER_IMAGE}:${DOCKER_TAG}")
                 }
             }
         }
 
-        /* Stage 3: Push to Docker Hub */
+        /* Stage 2: Push to Docker Hub */
         stage('Push to Docker Hub') {
             steps {
                 script {
                     docker.withRegistry('https://registry.hub.docker.com', 'docker-hub-cred') {
-                        docker.image("${DOCKER_IMAGE}").push()
+                        // Push cả image và tag
+                        docker.image("${DOCKER_IMAGE}:${DOCKER_TAG}").push()
+                        // Optionally push as latest
+                        docker.image("${DOCKER_IMAGE}:${DOCKER_TAG}").push('latest')
                     }
                 }
             }
         }
 
-        /* Stage 4: Deploy to EKS */
+        /* Stage 3: Deploy to EKS */
         stage('Deploy to EKS') {
             steps {
                 script {
-                    // Cập nhật kubeconfig
                     sh """
                     aws eks --region ${AWS_REGION} update-kubeconfig --name ${EKS_CLUSTER_NAME}
-                    """
-
-                    // Thay thế image name trong file deployment
-                    sh "sed -i 's|<DOCKER_IMAGE>|${DOCKER_IMAGE}|g' k8s-deployment.yaml"
-
-                    // Áp dụng cấu hình Kubernetes
-                    sh """
+                    sed -i 's|<DOCKER_IMAGE>|${DOCKER_IMAGE}:${DOCKER_TAG}|g' k8s-deployment.yaml
                     kubectl apply -f k8s-deployment.yaml
                     kubectl rollout status deployment/flask-app --timeout=2m
                     """
@@ -50,37 +48,20 @@ pipeline {
             }
         }
 
-        /* Stage 5: End-to-End Test */
+        /* Stage 4: End-to-End Test */
         stage('E2E Test') {
             steps {
                 script {
-                    // Lấy địa chỉ LoadBalancer
                     def LB_URL = sh(
                         returnStdout: true,
                         script: "kubectl get svc flask-app-service -o jsonpath='{.status.loadBalancer.ingress[0].hostname}'"
                     ).trim()
 
-                    // Kiểm tra ứng dụng
                     sh """
-                    echo "Testing endpoint: http://${LB_URL}"
                     curl -s --retry 5 --retry-delay 10 "http://${LB_URL}" | grep "Hello DevOps CI/CD Pipeline!"
                     """
                 }
             }
-        }
-    }
-    post {
-        success {
-            slackSend(
-                channel: '#devops-alerts',
-                message: "✅ Pipeline SUCCESS - Build ${env.BUILD_NUMBER}\nDeployed: ${DOCKER_IMAGE}\nEKS Cluster: ${EKS_CLUSTER_NAME}"
-            )
-        }
-        failure {
-            slackSend(
-                channel: '#devops-alerts',
-                message: "❌ Pipeline FAILED - Build ${env.BUILD_NUMBER}\nXem log tại: ${env.BUILD_URL}"
-            )
         }
     }
 }
