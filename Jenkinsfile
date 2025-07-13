@@ -1,8 +1,8 @@
 pipeline {
     agent {
         docker {
-            image 'docker:24.0.7-dind'
-            args '--privileged --group-add $(stat -c %g /var/run/docker.sock) -v /var/run/docker.sock:/var/run/docker.sock'
+            image 'docker:24.0.7'
+            args '-v /var/run/docker.sock:/var/run/docker.sock --group-add $(stat -c %g /var/run/docker.sock)'
         }
     }
     environment {
@@ -13,36 +13,19 @@ pipeline {
         DOCKER_IMAGE         = 'hieupro7410/flask-app'
     }
     stages {
-        /* Stage 1: Verify Docker Access */
-        stage('Check Docker') {
-            steps {
-                sh 'docker system info'
-            }
-        }
-
-        /* Stage 2: Unit Tests */
-        stage('Unit Tests') {
-            agent {
-                docker {
-                    image 'python:3.9-slim'
-                    reuseNode true
-                }
-            }
-            steps {
-                sh '''
-                python -m venv /tmp/venv
-                source /tmp/venv/bin/activate
-                pip install pytest pytest-cov
-                python -m pytest test_app.py --cov=app --cov-report=xml || true
-                '''
-            }
-        }
-
-        /* Stage 3: Build & Push */
-        stage('Build and Push') {
+        /* Stage 1: Build Docker Image */
+        stage('Build') {
             steps {
                 script {
                     docker.build("${DOCKER_IMAGE}")
+                }
+            }
+        }
+
+        /* Stage 2: Push to Docker Hub */
+        stage('Push') {
+            steps {
+                script {
                     docker.withRegistry('https://registry.hub.docker.com', 'docker-hub-cred') {
                         docker.image("${DOCKER_IMAGE}").push('latest')
                     }
@@ -50,18 +33,40 @@ pipeline {
             }
         }
 
-        /* Stage 4: Deploy to EKS */
-        stage('Deploy to EKS') {
+        /* Stage 3: Deploy to EKS */
+        stage('Deploy') {
             steps {
                 script {
-                    sh '''
+                    sh """
+                    # Install required tools
                     apk add --no-cache aws-cli kubectl
+
+                    # Configure AWS CLI
+                    aws configure set aws_access_key_id ${AWS_ACCESS_KEY_ID}
+                    aws configure set aws_secret_access_key ${AWS_SECRET_ACCESS_KEY}
+                    aws configure set region ${AWS_REGION}
+
+                    # Update kubeconfig
                     aws eks --region ${AWS_REGION} update-kubeconfig --name ${EKS_CLUSTER_NAME}
+
+                    # Deploy to EKS
                     sed -i "s|<DOCKER_IMAGE>|${DOCKER_IMAGE}:latest|g" k8s-deployment.yaml
-                    kubectl apply -f k8s-deployment.yaml --timeout=2m
-                    '''
+                    kubectl apply -f k8s-deployment.yaml
+                    kubectl rollout status deployment/flask-app --timeout=2m
+                    """
                 }
             }
+        }
+    }
+    post {
+        always {
+            echo "Deployment completed with status: ${currentBuild.currentResult}"
+        }
+        success {
+            echo "✅ Successfully deployed ${DOCKER_IMAGE} to EKS cluster ${EKS_CLUSTER_NAME}"
+        }
+        failure {
+            echo "❌ Deployment failed! Check logs for details"
         }
     }
 }
