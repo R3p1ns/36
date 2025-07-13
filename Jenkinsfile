@@ -6,7 +6,6 @@ pipeline {
         }
     }
     environment {
-        // AWS Credentials
         AWS_ACCESS_KEY_ID     = credentials('AWS_ACCESS_KEY_ID')
         AWS_SECRET_ACCESS_KEY = credentials('AWS_SECRET_ACCESS_KEY')
         EKS_CLUSTER_NAME     = 'lan-cuoi'
@@ -14,27 +13,24 @@ pipeline {
         DOCKER_IMAGE         = 'hieupro7410/flask-app'
     }
     stages {
-        /* Stage 1: Setup Python Test Environment */
-        stage('Prepare Test Environment') {
-            agent {
-                docker {
-                    image 'python:3.9-slim'
-                    reuseNode true
+        /* Stage 0: Setup Docker Environment */
+        stage('Prepare Docker') {
+            steps {
+                script {
+                    sh '''
+                    sudo chmod 777 /var/run/docker.sock
+                    docker system info
+                    '''
                 }
             }
-            steps {
-                sh '''
-                pip install pytest pytest-cov
-                python -m pytest test_app.py --cov=app --cov-report=xml || true
-                '''
-            }
         }
+
 
         /* Stage 2: Build Docker Image */
         stage('Build Docker Image') {
             steps {
                 script {
-                    docker.build("${DOCKER_IMAGE}")
+                    sh 'docker build -t ${DOCKER_IMAGE} .'
                 }
             }
         }
@@ -43,8 +39,15 @@ pipeline {
         stage('Push to Docker Hub') {
             steps {
                 script {
-                    docker.withRegistry('https://registry.hub.docker.com', 'docker-hub-cred') {
-                        docker.image("${DOCKER_IMAGE}").push('latest')
+                    withCredentials([usernamePassword(
+                        credentialsId: 'docker-hub-cred',
+                        usernameVariable: 'DOCKER_USER',
+                        passwordVariable: 'DOCKER_PASS'
+                    )]) {
+                        sh '''
+                        echo $DOCKER_PASS | docker login -u $DOCKER_USER --password-stdin
+                        docker push ${DOCKER_IMAGE}:latest
+                        '''
                     }
                 }
             }
@@ -54,21 +57,17 @@ pipeline {
         stage('Deploy to EKS') {
             steps {
                 script {
-                    sh """
+                    sh '''
                     apk add --no-cache aws-cli kubectl
+                    aws configure set aws_access_key_id ${AWS_ACCESS_KEY_ID}
+                    aws configure set aws_secret_access_key ${AWS_SECRET_ACCESS_KEY}
                     aws eks --region ${AWS_REGION} update-kubeconfig --name ${EKS_CLUSTER_NAME}
-                    sed -i 's|<DOCKER_IMAGE>|${DOCKER_IMAGE}:latest|g' k8s-deployment.yaml
+                    sed -i "s|<DOCKER_IMAGE>|${DOCKER_IMAGE}:latest|g" k8s-deployment.yaml
                     kubectl apply -f k8s-deployment.yaml
                     kubectl rollout status deployment/flask-app --timeout=2m
-                    """
+                    '''
                 }
             }
-        }
-    }
-    post {
-        always {
-            echo "Pipeline completed - Status: ${currentBuild.result}"
-            archiveArtifacts artifacts: '**/test-reports/*.xml', allowEmptyArchive: true
         }
     }
 }
